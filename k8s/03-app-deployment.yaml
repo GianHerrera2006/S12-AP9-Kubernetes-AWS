@@ -1,0 +1,146 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s12-backend
+  namespace: practica-s12
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: s12-backend
+  template:
+    metadata:
+      labels:
+        app: s12-backend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: python:3.12-alpine
+          command:
+            - python
+            - -c
+            - |
+              import os
+              from http.server import BaseHTTPRequestHandler, HTTPServer
+              class Handler(BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      if self.path in ["/health", "/ready"]:
+                          self.send_response(200)
+                          self.end_headers()
+                          self.wfile.write(b"S12 AP9 - Application OK")
+                      else:
+                          self.send_response(200)
+                          self.end_headers()
+                          self.wfile.write(b"S12 AP9 Cloud Application Running")
+              HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: db-secret
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s12-database
+  namespace: practica-s12
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: s12-database
+  template:
+    metadata:
+      labels:
+        app: s12-database
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: DB_NAME
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: DB_PASSWORD
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - agrimarket_demo
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - agrimarket_demo
+            initialDelaySeconds: 10
+            periodSeconds: 5

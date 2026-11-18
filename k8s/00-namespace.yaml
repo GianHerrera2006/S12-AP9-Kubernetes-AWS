@@ -1,0 +1,9 @@
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: practica-s12
+  labels:
+    app: s12-ap9
+    environment: cloud
+    project: kubernetes-security
