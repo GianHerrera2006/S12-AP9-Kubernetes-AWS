@@ -1,4 +1,16 @@
 
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sqlserver-storage
+  namespace: practica-s12
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,31 +34,65 @@ spec:
           type: RuntimeDefault
       containers:
         - name: backend
-          image: python:3.12-alpine
+          image: python:3.12-slim
           command:
             - python
             - -c
             - |
               import os
+              import socket
               from http.server import BaseHTTPRequestHandler, HTTPServer
+
               class Handler(BaseHTTPRequestHandler):
                   def do_GET(self):
-                      if self.path in ["/health", "/ready"]:
+                      if self.path == "/health":
                           self.send_response(200)
                           self.end_headers()
-                          self.wfile.write(b"S12 AP9 - Application OK")
+                          self.wfile.write(b"Backend is alive")
+                      elif self.path == "/ready":
+                          try:
+                              connection = socket.create_connection(
+                                  (os.environ["DB_HOST"], int(os.environ["DB_PORT"])),
+                                  timeout=3
+                              )
+                              connection.close()
+                              self.send_response(200)
+                              message = b"SQL Server connection available"
+                          except OSError:
+                              self.send_response(503)
+                              message = b"SQL Server connection unavailable"
+                          self.end_headers()
+                          self.wfile.write(message)
                       else:
                           self.send_response(200)
                           self.end_headers()
-                          self.wfile.write(b"S12 AP9 Cloud Application Running")
+                          self.wfile.write(b"S12 AP9 Cloud Application")
+
               HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
           ports:
             - containerPort: 8080
-          envFrom:
-            - configMapRef:
-                name: app-config
-            - secretRef:
-                name: db-secret
+              name: http
+          env:
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: DB_HOST
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: DB_PORT
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: DB_PASSWORD
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -70,7 +116,7 @@ spec:
             httpGet:
               path: /ready
               port: 8080
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 5
 ---
 apiVersion: apps/v1
@@ -88,59 +134,63 @@ spec:
       labels:
         app: s12-database
     spec:
+      nodeSelector:
+        workload: database
       securityContext:
         runAsNonRoot: true
-        runAsUser: 999
-        runAsGroup: 999
-        fsGroup: 999
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: postgres
-          image: postgres:16-alpine
+        - name: sqlserver
+          image: mcr.microsoft.com/mssql/server:2022-latest
           ports:
-            - containerPort: 5432
+            - containerPort: 1433
+              name: sqlserver
           env:
-            - name: POSTGRES_DB
-              valueFrom:
-                configMapKeyRef:
-                  name: app-config
-                  key: DB_NAME
-            - name: POSTGRES_USER
+            - name: ACCEPT_EULA
               valueFrom:
                 secretKeyRef:
                   name: db-secret
-                  key: DB_USER
-            - name: POSTGRES_PASSWORD
+                  key: ACCEPT_EULA
+            - name: MSSQL_SA_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: db-secret
                   key: DB_PASSWORD
+            - name: MSSQL_PID
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: MSSQL_PID
+            - name: MSSQL_MEMORY_LIMIT_MB
+              value: "1536"
           securityContext:
             allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - name: sql-data
+              mountPath: /var/opt/mssql
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
               cpu: 500m
-              memory: 512Mi
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
           livenessProbe:
-            exec:
-              command:
-                - pg_isready
-                - -U
-                - agrimarket_demo
-            initialDelaySeconds: 15
-            periodSeconds: 10
+            tcpSocket:
+              port: 1433
+            initialDelaySeconds: 60
+            periodSeconds: 15
           readinessProbe:
-            exec:
-              command:
-                - pg_isready
-                - -U
-                - agrimarket_demo
-            initialDelaySeconds: 10
-            periodSeconds: 5
+            tcpSocket:
+              port: 1433
+            initialDelaySeconds: 45
+            periodSeconds: 10
+      volumes:
+        - name: sql-data
+          persistentVolumeClaim:
+            claimName: sqlserver-storage
